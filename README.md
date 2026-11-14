@@ -1,1 +1,1 @@
-# semesterprosjekt_prm_gr3
+ros2 launch search_and_rescue rescue_robots.launch.py world:=N
