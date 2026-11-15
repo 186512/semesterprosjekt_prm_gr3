@@ -19,21 +19,24 @@ try:
 except ImportError:
     from prm_generator import PRMGenerator
 
-#Robotene venter på kart, odom og laser. sender startposisjonen sin og venter på den andre roboten
-#begge lager den samme PRM-planen og tar hver sin del
-#kjører ruta punkt for punkt og ved viewpoints spinner den og ser rundt seg.
+#Robotene venter på kart, odom og laser. sender startposisjonen sin og 
+# venter på den andre roboten.
+#Begge lager den samme PRM-planen og tar hver sin del
+#kjører ruta punkt for punkt og ved viewpoints snur den og ser rundt seg.
 
 
 PACKAGE = (__package__ or 'search_and_rescue').split('.')[0]
 
 
 def get_yaw_from_quaternion(q):
+    #regner robotens retning til yaw
     siny_cosp = 2 * (q.w * q.z + q.x * q.y)
     cosy_cosp = 1 - 2 * (q.y * q.y + q.z * q.z)
     return math.atan2(siny_cosp, cosy_cosp)
 
 
 def wrap_angle(a):
+    #snur alltid den korteste veien
     return math.atan2(math.sin(a), math.cos(a))
 
 
@@ -65,6 +68,8 @@ class ExplorerNode(Node):
     LOOK_MAX_TIME = 20.0
 
     def __init__(self):
+        # Leser parametre, lager publishers/subscribers, setter startverdiene
+        # og starten timerne
         super().__init__('explorer_node')
 
         self.declare_parameter('namespace', 'tb3_0')
@@ -149,19 +154,23 @@ class ExplorerNode(Node):
         self.get_logger().info(f'[{self.ns}] waiting for map, odometry and laser...')
 
     def now(self):
+        # sim tid i sekunder
         return self.get_clock().now().nanoseconds * 1e-9
 
     def reset_progress(self):
+        # husker pos og tiden nå for stuck sjekken
         self.progress_pose = (self.x, self.y, self.yaw)
         self.progress_time = self.now()
 
     def check_progress(self):
+        # stuck sjekk hvis roboten ikke har flyttet eller snudd seg
         px, py, pyaw = self.progress_pose
         if math.hypot(self.x - px, self.y - py) > 0.05 or abs(wrap_angle(self.yaw - pyaw)) > 0.25:
             self.reset_progress()
         return self.now() - self.progress_time < self.STUCK_TIME
 
     def next_waypoint(self, reason):
+        # Går videre til neste punkt
         self.get_logger().info(f'Waypoint {self.wp_index + 1}/{len(self.waypoints)} {reason}')
         target = tuple(self.waypoints[self.wp_index])
         if self.replan_target is None or target == self.replan_target:
@@ -173,12 +182,14 @@ class ExplorerNode(Node):
             self.fire_goal_missed()
 
     def map_callback(self, msg):
+        #lagrer mappet
         if self.map_msg is None:
             self.get_logger().info(f'Map received: {msg.info.width}x{msg.info.height} '
                                    f'@ {msg.info.resolution} m')
         self.map_msg = msg
 
     def start_callback(self, msg):
+        # tar startposisjonen til robotene
         ns = msg.header.frame_id
         if ns not in self.starts:
             self.starts[ns] = (msg.point.x, msg.point.y)
@@ -189,6 +200,7 @@ class ExplorerNode(Node):
                 self.resplit_pending = True
 
     def peer_odom(self, ns, msg):
+        # lagrer posisjonen til de andre robotene
         p = msg.pose.pose.position
         self.peer_poses[ns] = (p.x, p.y)
 
@@ -196,6 +208,7 @@ class ExplorerNode(Node):
     FIRE_OK_DIST = 1.8 
 
     def fire_approach_callback(self, msg):
+        #lagrer markøren til big fire og kaller plan_fire_approach
         if self.fire_state is not None or self.prm is None:
             return
         self.fire_marker = (msg.x, msg.y)
@@ -203,6 +216,7 @@ class ExplorerNode(Node):
         self.plan_fire_approach()
 
     def plan_fire_approach(self):
+        #finner et ledig punkt ved brannen og legger ruten dit 
         mx, my = self.fire_marker
         d_now = math.hypot(self.x - mx, self.y - my)
         if d_now <= self.FIRE_STANDOFF + 0.2:
@@ -232,12 +246,14 @@ class ExplorerNode(Node):
         self.publish_path_viz()
 
     def arrive_at_fire(self):
+        #gir beskjed til coordinator om ankomst
         self.fire_state = 'at_fire'
         d = math.hypot(self.x - self.fire_marker[0], self.y - self.fire_marker[1])
         self.get_logger().info(f'At the big fire ({d:.2f} m away) - waiting for the rescue robot')
         self.at_fire_pub.publish(Bool(data=True))
 
     def fire_goal_missed(self):
+        #planlegger rute igjen hvis den ikke blir godkjent
         mx, my = self.fire_marker
         if math.hypot(self.x - mx, self.y - my) <= self.FIRE_OK_DIST or self.fire_attempts >= 3:
             self.arrive_at_fire()
@@ -246,16 +262,19 @@ class ExplorerNode(Node):
             self.plan_fire_approach()
 
     def wait_callback(self, msg):
+        #coordinator sier om vi skal vente eller kan fortsette
         if msg.data != self.wait_at_fire:
             self.get_logger().info('Waiting at the big fire' if msg.data else 'Released from the big fire')
         self.wait_at_fire = msg.data
 
     def yield_callback(self, msg):
+        #coordinator sier om vi skal vike for den andre roboten
         if msg.data != self.yielding:
             self.get_logger().info('Giving way to the other robot' if msg.data else 'Continuing')
         self.yielding = msg.data
 
     def scan_callback(self, msg):
+        #sjekker avstander fra lidar
         r = np.asarray(msg.ranges, dtype=float)
         a = msg.angle_min + np.arange(len(r)) * msg.angle_increment
         a = np.arctan2(np.sin(a), np.cos(a))
@@ -264,6 +283,7 @@ class ExplorerNode(Node):
         x, y = r * np.cos(a), r * np.sin(a)
 
         def mn(mask):
+            #korteste avstand blant mengden
             return float(r[mask].min()) if np.any(mask) else math.inf
 
         in_corridor = (x > 0.0) & (np.abs(y) < self.ROBOT_HALF_WIDTH)
@@ -275,12 +295,15 @@ class ExplorerNode(Node):
         self.have_scan = True
 
     def odom_callback(self, msg):
+        #leser odometry: x, y og yaw
         self.x = msg.pose.pose.position.x
         self.y = msg.pose.pose.position.y
         self.yaw = get_yaw_from_quaternion(msg.pose.pose.orientation)
         self.have_odom = True
 
     def startup(self):
+        #venter på odom, laser og kart, sender startpos og venter på andre
+        #roboten før den planlegger rute
         if not (self.have_odom and self.have_scan):
             return
         if self.map_msg is None and not self.map_name:
@@ -311,6 +334,7 @@ class ExplorerNode(Node):
         self.build_plan()
 
     def resplit(self):
+        #deler kartet på nytt hvis en robot kommer sent
         self.resplit_pending = False
         if self.fire_state is not None or self.state in ('waiting', 'done'):
             return
@@ -335,6 +359,7 @@ class ExplorerNode(Node):
         self.publish_path_viz()
 
     def build_plan(self):
+        #Lager PRM-roadmappet og regner ut robotens rute og viewpoints
         names = sorted(self.starts)
         self.planned_names = set(names)
         robot_starts = [self.starts[n] for n in names]
@@ -370,6 +395,7 @@ class ExplorerNode(Node):
         self.reset_progress()
 
     def start_recovery(self, reason, obstacle_ahead=False):
+        #hvis noe er i veien legges det inn i roadmappet og den rygger eller snur
         self.get_logger().warn(f'{reason} -> recovering', throttle_duration_sec=1.0)
         if obstacle_ahead:
             d = self.corridor_min + 0.15
@@ -384,6 +410,7 @@ class ExplorerNode(Node):
         self.state_start = self.now()
 
     def finish_recovery(self):
+        #planlegger ny vei rundt andre roboter eller hopp over punktet
         self.state = 'follow'
         self.reset_progress()
         self.wp_start_time = self.now()
@@ -435,6 +462,7 @@ class ExplorerNode(Node):
             self.next_waypoint('skipped (no route)')
 
     def run_recovery(self, cmd):
+        #rygger og snir til veien foran er fri
         elapsed = self.now() - self.state_start
         if self.state == 'backup':
             if elapsed < self.BACKUP_TIME and self.rear_min > 0.20:
@@ -448,12 +476,14 @@ class ExplorerNode(Node):
                 cmd.angular.z = 0.8 * self.turn_dir
 
     def update_seen(self):
+        #markerer veggene kameraet ser som ssett
         if self.prm is not None and self.have_odom and hasattr(self.prm, 'seen'):
             self.prm.camera_view(self.x, self.y, self.yaw)
         if self.fire_state == 'at_fire' and self.wait_at_fire:
             self.at_fire_pub.publish(Bool(data=True)) 
 
     def run_look(self, cmd):
+        # Ved et viewpoint snur den mot alle vegger 
         while self.look_queue and self.look_dwell_start is None:
             _, ids = self.look_queue[0]
             if self.prm.seen[ids].mean() >= self.LOOK_SKIP_SEEN:
@@ -479,7 +509,7 @@ class ExplorerNode(Node):
             self.look_dwell_start = None
 
     def resume_deferred(self):
-        """Route is done but some viewpoints were postponed: try the first one again."""
+        #prøver viewpoints som evt ble utsatt etter ruten er ferdig
         if self.now() < self.defer_wait_until:
             return False
         target = self.deferred.pop(0)
@@ -487,7 +517,6 @@ class ExplorerNode(Node):
                  if math.hypot(px - self.x, py - self.y) < 4.0]
         leg = self.prm.plan_path_world((self.x, self.y), target, avoid=avoid)
         if not leg and self.defer_count.get(target, 0) < self.MAX_DEFERS:
-            # still blocked: put it back and wait a bit for the other robot to move
             self.defer_count[target] = self.defer_count.get(target, 0) + 1
             self.deferred.append(target)
             self.defer_wait_until = self.now() + self.DEFER_WAIT
@@ -503,13 +532,12 @@ class ExplorerNode(Node):
         self.publish_path_viz()
         return True
 
-    # ----------------------------------------------------------- rescue robot
-    RESCUE_ARRIVE_DIST = 0.9   # close enough to the target (it lies 0.6 m from the marker)
-    RESCUE_RETRY = 3.0         # seconds between new route attempts when blocked
-    RESCUE_MARKER_DIST = 1.6   # ...or this close to the marker itself (scoring needs < 2 m)
+    RESCUE_ARRIVE_DIST = 0.9
+    RESCUE_RETRY = 3.0
+    RESCUE_MARKER_DIST = 1.6
 
     def start_rescue_role(self):
-        """Rescue robot: build the roadmap, then park until the coordinator calls."""
+        #lager roadmappet til rescue roboten og venter til stor brann er funnet
         try:
             self.prm = PRMGenerator.from_occupancy_grid(self.map_msg)
             self.prm.generate_roadmap([(self.x, self.y)])
@@ -530,18 +558,15 @@ class ExplorerNode(Node):
                                f'waiting for the big fire')
 
     def rescue_target_callback(self, msg):
+        #tar imot target fra coordinator
         if self.rescue_target is not None:
-            return                       # the coordinator repeats the target; act on it once
+            return
         self.rescue_target = (msg.x, msg.y)
         self.rescue_called_at = self.now()
         self.get_logger().info('Big fire! Heading out')
 
     def choose_parking_spot(self, avoid):
-        """
-        Roadmap point to park at: within 1.45 m of the marker, on the marker's side of any
-        wall (clear line of sight to it), not too close to the finder or other robots, and
-        the shortest drive from here. Returns (spot, route) or (None, None).
-        """
+        #finner en parkeringsplass og korteste ruten dit
         mx, my = self.rescue_marker
         prm = self.prm
         cost, _ = prm.dijkstra(prm.nearest_node(self.x, self.y))
@@ -554,7 +579,6 @@ class ExplorerNode(Node):
             if any(math.hypot(wx - px, wy - py) < self.ROBOT_AVOID_RADIUS + 0.1
                    for px, py in self.peer_poses.values()):
                 continue
-            # line of sight to (just in front of) the marker: same side of the wall
             ex, ey = mx + 0.15 * (wx - mx) / d, my + 0.15 * (wy - my) / d
             if prm._check_collision(prm.nodes[n], prm._world_to_pixel(ex, ey), prm.raw_free):
                 continue
@@ -566,6 +590,7 @@ class ExplorerNode(Node):
         return None, None
 
     def plan_rescue_route(self):
+        #lager rute til parkeringsplassen eller coordinator sitt target
         avoid = [(px, py, self.ROBOT_AVOID_RADIUS) for px, py in self.peer_poses.values()]
         route = None
         if self.rescue_marker is not None:
@@ -573,7 +598,7 @@ class ExplorerNode(Node):
             if route:
                 self.get_logger().info(f'Parking spot at the fire: ({spot[0]:.2f}, {spot[1]:.2f}), '
                                        f'{math.dist(spot, self.rescue_marker):.2f} m from the marker')
-        if not route:   # no marker yet, or no free spot: use the coordinator's target point
+        if not route:
             route = (self.prm.plan_path_world((self.x, self.y), self.rescue_target, avoid=avoid)
                      or self.prm.plan_path_world((self.x, self.y), self.rescue_target))
         if not route:
@@ -581,7 +606,6 @@ class ExplorerNode(Node):
             self.rescue_retry_at = self.now() + self.RESCUE_RETRY
             self.waypoints, self.wp_index = [], 0
             return
-        # the target may be just inside the inflated wall zone: stop at the last roadmap point
         if not self.prm.is_free_world(*route[-1], inflated=True) and len(route) > 1:
             route = route[:-1]
         self.waypoints, self.wp_index = route, 0
@@ -592,39 +616,38 @@ class ExplorerNode(Node):
         self.publish_path_viz()
 
     def run_rescue(self, cmd):
-        """Returns True if the rescue logic handled this control step."""
+        #kjører til brannen og sier ifra når den er fremem
         if self.state == 'rescue_idle' and self.rescue_target is None:
-            return True                                   # parked, wait for the call
+            return True
         if self.rescue_arrived:
             self.rescue_arrived_pub.publish(Bool(data=True))
-            return True                                   # stay at the fire
+            return True
         if self.rescue_target is None:
             return True
         d = math.hypot(self.x - self.rescue_target[0], self.y - self.rescue_target[1])
         dm = (math.hypot(self.x - self.rescue_marker[0], self.y - self.rescue_marker[1])
               if self.rescue_marker else math.inf)
         if d < self.RESCUE_ARRIVE_DIST or dm < self.RESCUE_MARKER_DIST:
-            # scoring needs both robots within 2 m of the marker; stop as soon as we are
             self.rescue_arrived = True
             self.get_logger().info(f'Arrived at the big fire ({dm:.2f} m from the marker)')
             self.rescue_arrived_pub.publish(Bool(data=True))
             return True
         if self.wp_index >= len(self.waypoints):
-            # route used up (or blocked) but not there yet: plan again from here
             if self.state in ('backup', 'turn'):
                 self.state = 'follow'
             if self.rescue_marker is None and self.now() - self.rescue_called_at < 2.0:
-                return True                      # the marker position follows the target
+                return True
             if self.now() >= self.rescue_retry_at:
                 self.plan_rescue_route()
             return True
         return False
 
     def rescue_marker_callback(self, msg):
+        #lagrer big fire markør
         self.rescue_marker = (msg.x, msg.y)
 
-    # ------------------------------------------------------------- control loop
     def control_loop(self):
+        #velger hva roboten skal gjøre (vente, rygge, se rudnt, kjøre)
         cmd = Twist()
         if self.state == 'waiting':
             self.startup()
@@ -636,10 +659,10 @@ class ExplorerNode(Node):
         if self.resplit_pending:
             self.resplit()
         if self.state == 'done' and self.fire_state == 'approach':
-            self.state = 'follow'                 # finished exploring, but must go to the fire
+            self.state = 'follow'
         if self.state != 'done' and self.wp_index >= len(self.waypoints) and self.deferred:
             if not self.resume_deferred():
-                self.cmd_vel_pub.publish(cmd)     # waiting before the next try
+                self.cmd_vel_pub.publish(cmd)
                 return
         if self.state == 'done' or self.wp_index >= len(self.waypoints):
             if self.state != 'done':
@@ -648,10 +671,9 @@ class ExplorerNode(Node):
             self.cmd_vel_pub.publish(cmd)
             return
         if (self.wait_at_fire or self.yielding) and self.fire_state != 'approach':
-            # Stand still; pause the timeout and stuck timers so they don't fire afterwards
             self.wp_start_time = self.now()
             self.reset_progress()
-            if self.state == 'look':              # pause the look-around timers too
+            if self.state == 'look': 
                 self.state_start += 0.1
                 if self.look_dwell_start is not None:
                     self.look_dwell_start += 0.1
@@ -695,7 +717,6 @@ class ExplorerNode(Node):
             self.start_recovery(f'Obstacle {self.corridor_min:.2f} m ahead', obstacle_ahead=True)
         else:
             speed = self.MAX_SPEED if self.corridor_min > self.SLOW_DIST else self.SLOW_SPEED
-            # turn while driving: slow down the further we point away from the target
             speed *= max(0.3, 1.0 - abs(heading_err) / max(self.TURN_IN_PLACE_ANGLE, 0.4))
             cmd.linear.x = min(speed, 0.5 * dist + 0.05)
             cmd.angular.z = max(min(1.5 * heading_err, 1.0), -1.0)
@@ -705,15 +726,16 @@ class ExplorerNode(Node):
                 cmd.angular.z += 0.4
         self.cmd_vel_pub.publish(cmd)
 
-    # ------------------------------------------------------------ visualisation
     def publish_viz(self):
+        #sender roadmap, rute og vegger til rviz
         if self.prm is not None:
             self.publish_prm_viz()
             self.publish_path_viz()
             self.publish_walls_viz()
 
     def publish_walls_viz(self):
-        """Wall cells the camera has seen (green) / not seen yet (red), on /<ns>/seen_walls."""
+        #vegger som er sett i grønt og vegger som ikke er sett i rødt
+        #må noen ganger som inn for at det skal komme opp
         if not hasattr(self.prm, 'seen'):
             return
         arr = MarkerArray()
@@ -733,6 +755,7 @@ class ExplorerNode(Node):
         self.walls_pub.publish(arr)
 
     def publish_prm_viz(self):
+        #tegner roadmap til rviz
         stamp = self.get_clock().now().to_msg()
         arr = MarkerArray()
         nodes = Marker()
@@ -766,6 +789,7 @@ class ExplorerNode(Node):
         self.prm_pub.publish(arr)
 
     def publish_path_viz(self):
+        #tegner ruten til roboten i rvizs
         path = Path()
         path.header.frame_id = 'map'
         path.header.stamp = self.get_clock().now().to_msg()
