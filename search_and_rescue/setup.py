@@ -29,7 +29,6 @@ setup(
         'console_scripts': [
                 'explorer = search_and_rescue.explorer_node:main',
                 'multi_robot_coordinator = search_and_rescue.multi_robot_coordinator:main',
-                'rescue_robot = search_and_rescue.rescue_robot:main',
         ],
     },
 )
