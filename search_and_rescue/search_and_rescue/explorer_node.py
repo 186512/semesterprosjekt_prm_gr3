@@ -1,17 +1,5 @@
 #!/usr/bin/env python3
-"""
-PRM explorer for one robot. Run one per robot:
 
-  ros2 run search_and_rescue explorer --ros-args -p namespace:=tb3_0
-  ros2 run search_and_rescue explorer --ros-args -p namespace:=tb3_1
-
-- Map: taken from the /map topic (published by the map server in your launch file),
-  so it always matches the world you launched. Optional: -p map_name:=map_dat160_w1
-  to load the .yaml/.png from the package instead.
-- Start positions: each explorer publishes its own start pose on /explorer/starts and
-  listens for the others, so the robots split the building between them. A robot that
-  hears nobody within `wait_for_peers` seconds explores the whole building alone.
-"""
 import math
 import os
 
@@ -26,10 +14,15 @@ from nav_msgs.msg import Odometry, Path, OccupancyGrid
 from visualization_msgs.msg import Marker, MarkerArray
 from ament_index_python.packages import get_package_share_directory
 
-try:                                   # works in whatever package these files are placed
+try: 
     from .prm_generator import PRMGenerator
 except ImportError:
     from prm_generator import PRMGenerator
+
+#Robotene venter på kart, odom og laser. sender startposisjonen sin og venter på den andre roboten
+#begge lager den samme PRM-planen og tar hver sin del
+#kjører ruta punkt for punkt og ved viewpoints spinner den og ser rundt seg.
+
 
 PACKAGE = (__package__ or 'search_and_rescue').split('.')[0]
 
@@ -45,17 +38,16 @@ def wrap_angle(a):
 
 
 LATCHED = QoSProfile(depth=10, durability=DurabilityPolicy.TRANSIENT_LOCAL,
-                     reliability=ReliabilityPolicy.RELIABLE, history=HistoryPolicy.KEEP_LAST)
+    reliability=ReliabilityPolicy.RELIABLE, history=HistoryPolicy.KEEP_LAST)
 
 
 class ExplorerNode(Node):
-    # ---- Tuning -------------------------------------------------------------
-    ROBOT_HALF_WIDTH = 0.20   # waffle_pi is 0.306 m wide; half of that plus margin
-    STOP_DIST = 0.32          # obstacle this close in the driving corridor -> recover
-    SLOW_DIST = 0.50          # slow down when an obstacle is closer than this ahead
-    TOO_CLOSE = 0.25          # anything this close in front -> back up first
+    ROBOT_HALF_WIDTH = 0.20
+    STOP_DIST = 0.32
+    SLOW_DIST = 0.50
+    TOO_CLOSE = 0.25
     SIDE_PUSH_DIST = 0.28
-    MAX_SPEED = 0.26          # waffle_pi top speed
+    MAX_SPEED = 0.26
     SLOW_SPEED = 0.14
     WAYPOINT_TOL = 0.15
     WAYPOINT_TIMEOUT = 30.0
@@ -63,31 +55,24 @@ class ExplorerNode(Node):
     BACKUP_TIME = 1.2
     TURN_TIMEOUT = 3.0
     MAX_REPLANS = 3
-    TURN_IN_PLACE_ANGLE = 0.4 # stop and rotate on the spot if the next waypoint is further off
-    PASS_TOL = 0.15           # how close to get to waypoints that are not viewpoints
-    ROBOT_AVOID_RADIUS = 0.5  # keep the path this far from another robot's centre when replanning
-    MAX_DEFERS = 3            # times a robot-blocked viewpoint may be postponed before skipping it
-    DEFER_WAIT = 8.0          # if only postponed viewpoints are left, wait this long between tries
-    LOOK_DWELL = 0.8          # seconds to hold still at each look heading (time for ArUco)
-    LOOK_SKIP_SEEN = 0.8      # skip a look if this fraction of its walls was already seen
-    LOOK_MAX_TIME = 20.0      # max seconds spent looking around at one viewpoint
+    TURN_IN_PLACE_ANGLE = 0.4
+    PASS_TOL = 0.15
+    ROBOT_AVOID_RADIUS = 0.5
+    MAX_DEFERS = 3
+    DEFER_WAIT = 8.0
+    LOOK_DWELL = 0.8
+    LOOK_SKIP_SEEN = 0.8
+    LOOK_MAX_TIME = 20.0
 
     def __init__(self):
         super().__init__('explorer_node')
 
         self.declare_parameter('namespace', 'tb3_0')
-        self.declare_parameter('map_name', '')        # '' = use the /map topic
+        self.declare_parameter('map_name', '')
         self.declare_parameter('map_topic', '/map')
-        # Seconds to wait for the other explorer(s) before planning alone. Robots spawn one
-        # after another in Gazebo, so this must be generous. For a one-robot test, set
-        # num_robots:=1 instead. A robot that still joins later triggers a re-split.
         self.declare_parameter('wait_for_peers', 60.0)
-        self.declare_parameter('num_robots', 2)        # robots that run this explorer
-        # Every robot in the world (explorers, rescue robot...). Their positions are tracked
-        # so a robot is never mistaken for debris and blocked out of the roadmap.
+        self.declare_parameter('num_robots', 2)
         self.declare_parameter('all_robots', ['tb3_0', 'tb3_1', 'tb3_2'])
-        # 'explorer': search the building.  'rescue': wait at the start until the coordinator
-        # sends /<ns>/fire_target, drive there with the roadmap, report /<ns>/rescue_arrived.
         self.declare_parameter('role', 'explorer')
 
         self.ns = self.get_parameter('namespace').value
@@ -96,8 +81,8 @@ class ExplorerNode(Node):
         self.wait_for_peers = float(self.get_parameter('wait_for_peers').value)
         self.num_robots = int(self.get_parameter('num_robots').value)
         self.map_msg = None
-        self.starts = {}             # namespace -> (x, y), filled by the start handshake
-        self.planned_names = None    # robots included in the current plan
+        self.starts = {}
+        self.planned_names = None
         self.resplit_pending = False
 
         prefix = f'/{self.ns}' if self.ns else ''
@@ -107,23 +92,20 @@ class ExplorerNode(Node):
         self.create_subscription(OccupancyGrid, self.get_parameter('map_topic').value,
                                  self.map_callback, LATCHED)
 
-        # Start-pose handshake between robots
         self.start_pub = self.create_publisher(PointStamped, '/explorer/starts', LATCHED)
         self.create_subscription(PointStamped, '/explorer/starts', self.start_callback, LATCHED)
 
-        # Commands from the coordinator: stop at the big fire / give way to the other robot
         self.wait_at_fire = False
         self.yielding = False
         self.create_subscription(Bool, f'{prefix}/wait_at_fire', self.wait_callback, 10)
         self.create_subscription(Bool, f'{prefix}/yield', self.yield_callback, 10)
-        # Big fire: the coordinator sends the marker position, we drive in close and report
         self.fire_marker = None
         self.fire_goal = None
-        self.fire_state = None       # None | 'approach' | 'at_fire'
+        self.fire_state = None
         self.fire_attempts = 0
         self.create_subscription(Point, f'{prefix}/fire_approach', self.fire_approach_callback, 10)
         self.at_fire_pub = self.create_publisher(Bool, f'{prefix}/at_fire', 10)
-        self.peer_poses = {}         # other robots' positions, to tell them apart from debris
+        self.peer_poses = {}
         for other in self.get_parameter('all_robots').value:
             if other != self.ns:
                 self.create_subscription(Odometry, f'/{other}/odom',
@@ -133,27 +115,24 @@ class ExplorerNode(Node):
         self.path_pub = self.create_publisher(Path, f'{prefix}/exploration_path', LATCHED)
         self.walls_pub = self.create_publisher(MarkerArray, f'{prefix}/seen_walls', LATCHED)
 
-        # Robot state (odometry = map frame in this Gazebo setup)
         self.x = self.y = self.yaw = 0.0
         self.have_odom = False
 
-        # Laser summary
         self.corridor_min = math.inf
         self.front_half_min = math.inf
         self.left_min = self.right_min = self.rear_min = math.inf
         self.have_scan = False
 
-        # Behaviour state
-        self.state = 'waiting'       # waiting -> follow | backup | turn -> done
+        self.state = 'waiting'
         self.state_start = None
         self.turn_dir = 1.0
         self.replans = 0
         self.replan_target = None
-        self.looks = {}              # viewpoint (x, y) -> [(heading, wall ids), ...]
+        self.looks = {}
         self.look_queue = []
         self.look_dwell_start = None
         self.looked = set()
-        self.deferred = []           # viewpoints postponed because a robot blocked the way
+        self.deferred = []
         self.defer_count = {}
         self.defer_wait_until = 0.0
         self.progress_pose = None
@@ -165,11 +144,10 @@ class ExplorerNode(Node):
         self.wp_start_time = 0.0
 
         self.create_timer(0.1, self.control_loop)
-        self.create_timer(2.0, self.publish_viz)   # republish so RViz can subscribe at any time
-        self.create_timer(0.25, self.update_seen)  # which walls has the camera covered
+        self.create_timer(2.0, self.publish_viz)
+        self.create_timer(0.25, self.update_seen)
         self.get_logger().info(f'[{self.ns}] waiting for map, odometry and laser...')
 
-    # ------------------------------------------------------------------ helpers
     def now(self):
         return self.get_clock().now().nanoseconds * 1e-9
 
@@ -194,7 +172,6 @@ class ExplorerNode(Node):
         if self.fire_state == 'approach' and target == self.fire_goal and 'big fire' not in reason:
             self.fire_goal_missed()
 
-    # ---------------------------------------------------------------- callbacks
     def map_callback(self, msg):
         if self.map_msg is None:
             self.get_logger().info(f'Map received: {msg.info.width}x{msg.info.height} '
@@ -208,9 +185,6 @@ class ExplorerNode(Node):
             if ns != self.ns:
                 self.get_logger().info(f'Peer {ns} starts at ({msg.point.x:.2f}, {msg.point.y:.2f})')
             if self.planned_names is not None and ns not in self.planned_names:
-                # We already planned without this robot (it was too late): split the building
-                # again so we don't both cover the same area. It plans with us, so the
-                # two plans match.
                 self.get_logger().warn(f'{ns} joined after we planned - re-splitting the building')
                 self.resplit_pending = True
 
@@ -218,10 +192,8 @@ class ExplorerNode(Node):
         p = msg.pose.pose.position
         self.peer_poses[ns] = (p.x, p.y)
 
-    # ----------------------------------------------------------------- big fire
-    FIRE_STANDOFF = 1.0       # stop this far from the big fire: leaves room for the
-                              # rescue robot, both must be within 2 m for scoring
-    FIRE_OK_DIST = 1.8        # close enough to count as "at the fire"
+    FIRE_STANDOFF = 1.0 
+    FIRE_OK_DIST = 1.8 
 
     def fire_approach_callback(self, msg):
         if self.fire_state is not None or self.prm is None:
@@ -236,14 +208,14 @@ class ExplorerNode(Node):
         if d_now <= self.FIRE_STANDOFF + 0.2:
             self.arrive_at_fire()
             return
-        ux, uy = (self.x - mx) / d_now, (self.y - my) / d_now   # from the marker towards us
+        ux, uy = (self.x - mx) / d_now, (self.y - my) / d_now
         goal = None
         for d in (self.FIRE_STANDOFF, 1.2, 0.8, 1.4):
             p = (mx + d * ux, my + d * uy)
             if self.prm.is_free_world(*p, inflated=True):
                 goal = p
                 break
-        if goal is None:   # fall back to the roadmap node closest to the stand-off point
+        if goal is None:
             n = self.prm.nearest_node(mx + self.FIRE_STANDOFF * ux, my + self.FIRE_STANDOFF * uy)
             goal = self.prm._pixel_to_world(*self.prm.nodes[n])
         path = self.prm.plan_path_world((self.x, self.y), goal) or [goal]
@@ -251,7 +223,6 @@ class ExplorerNode(Node):
         self.fire_goal = tuple(goal)
         self.fire_state = 'approach'
         self.fire_attempts += 1
-        # Drop whatever we were doing and drive to the fire first; exploration resumes after
         self.look_queue = []
         self.state = 'follow'
         self.replans, self.replan_target = 0, None
@@ -267,7 +238,6 @@ class ExplorerNode(Node):
         self.at_fire_pub.publish(Bool(data=True))
 
     def fire_goal_missed(self):
-        """Approach waypoint was skipped (blocked/timeout): accept if close, else retry."""
         mx, my = self.fire_marker
         if math.hypot(self.x - mx, self.y - my) <= self.FIRE_OK_DIST or self.fire_attempts >= 3:
             self.arrive_at_fire()
@@ -310,9 +280,7 @@ class ExplorerNode(Node):
         self.yaw = get_yaw_from_quaternion(msg.pose.pose.orientation)
         self.have_odom = True
 
-    # ------------------------------------------------------------------ startup
     def startup(self):
-        """Waiting state: announce our start, collect peers, then build the plan."""
         if not (self.have_odom and self.have_scan):
             return
         if self.map_msg is None and not self.map_name:
@@ -343,7 +311,6 @@ class ExplorerNode(Node):
         self.build_plan()
 
     def resplit(self):
-        """Rebuild the plan with all known robots, then continue from where we are."""
         self.resplit_pending = False
         if self.fire_state is not None or self.state in ('waiting', 'done'):
             return
@@ -352,11 +319,10 @@ class ExplorerNode(Node):
         self.replans, self.replan_target = 0, None
         self.build_plan()
         if old_seen is not None and hasattr(self.prm, 'seen') and len(self.prm.seen) == len(old_seen):
-            self.prm.seen |= old_seen            # same map -> same wall cells: keep what we saw
+            self.prm.seen |= old_seen
         if self.state != 'follow' or not self.waypoints:
             return
-        # Skip the part of the new route we have already covered: go straight to the first
-        # viewpoint we have not looked around at yet.
+        
         k = next((i for i, w in enumerate(self.waypoints)
                   if tuple(w) in self.looks and tuple(w) not in self.looked), None)
         if k is None:
@@ -369,7 +335,7 @@ class ExplorerNode(Node):
         self.publish_path_viz()
 
     def build_plan(self):
-        names = sorted(self.starts)                  # same order on every robot
+        names = sorted(self.starts)
         self.planned_names = set(names)
         robot_starts = [self.starts[n] for n in names]
         robot_index = names.index(self.ns)
@@ -403,7 +369,6 @@ class ExplorerNode(Node):
         self.wp_start_time = self.now()
         self.reset_progress()
 
-    # ----------------------------------------------------------------- recovery
     def start_recovery(self, reason, obstacle_ahead=False):
         self.get_logger().warn(f'{reason} -> recovering', throttle_duration_sec=1.0)
         if obstacle_ahead:
@@ -432,7 +397,6 @@ class ExplorerNode(Node):
             self.wp_index = end
             self.next_waypoint('skipped (blocked too often)')
             return
-        # Other robots nearby are temporary obstacles: plan around where they stand right now
         avoid = [(px, py, self.ROBOT_AVOID_RADIUS) for px, py in self.peer_poses.values()
                  if math.hypot(px - self.x, py - self.y) < 4.0]
         tx, ty = self.replan_target
@@ -445,8 +409,6 @@ class ExplorerNode(Node):
             self.get_logger().info(f'Replanned around {len(avoid)} robot(s): {len(new_leg)} waypoints')
         elif avoid and self.fire_state != 'approach' and self.role != 'rescue' \
                 and self.defer_count.get(self.replan_target, 0) < self.MAX_DEFERS:
-            # Another robot blocks the only way there. It will probably move later (the rescue
-            # robot leaves when the fire is found), so do the reachable viewpoints first.
             target = self.replan_target
             self.defer_count[target] = self.defer_count.get(target, 0) + 1
             del self.waypoints[self.wp_index:end + 1]
@@ -456,7 +418,7 @@ class ExplorerNode(Node):
             self.publish_path_viz()
             return
         elif avoid and self.role == 'rescue':
-            self.waypoints, self.wp_index = [], 0      # run_rescue picks a new parking spot
+            self.waypoints, self.wp_index = [], 0 
             self.rescue_retry_at = self.now() + 1.0
             return
         elif avoid:
@@ -485,20 +447,17 @@ class ExplorerNode(Node):
             else:
                 cmd.angular.z = 0.8 * self.turn_dir
 
-    # ------------------------------------------------------------- looking around
     def update_seen(self):
-        """Mark the wall cells currently inside the camera's view as seen."""
         if self.prm is not None and self.have_odom and hasattr(self.prm, 'seen'):
             self.prm.camera_view(self.x, self.y, self.yaw)
         if self.fire_state == 'at_fire' and self.wait_at_fire:
-            self.at_fire_pub.publish(Bool(data=True))   # repeat until the coordinator releases us
+            self.at_fire_pub.publish(Bool(data=True)) 
 
     def run_look(self, cmd):
-        """At a viewpoint: turn to each heading with unseen walls and hold still briefly."""
         while self.look_queue and self.look_dwell_start is None:
             _, ids = self.look_queue[0]
             if self.prm.seen[ids].mean() >= self.LOOK_SKIP_SEEN:
-                self.look_queue.pop(0)          # already seen while driving: skip this look
+                self.look_queue.pop(0) 
             else:
                 break
         if not self.look_queue or self.now() - self.state_start > self.LOOK_MAX_TIME:

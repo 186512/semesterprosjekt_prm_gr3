@@ -26,18 +26,16 @@ class MultiRobotCoordinator(Node):
         self.declare_parameter('max_range', 2.5)
         self.declare_parameter('approach_offset', 0.6)
         self.declare_parameter('fire_max_wait', 150.0)
+
         self.max_range = self.get_parameter('max_range').value
         self.approach_offset = self.get_parameter('approach_offset').value
         self.fire_max_wait = self.get_parameter('fire_max_wait').value
-        self.fire_found_at = None
 
         self.tf_buffer = Buffer()
         self.tf_listener = TransformListener(self.tf_buffer, self)
         self.client = self.create_client(SetMarkerPosition, '/set_marker_position')
         
         self.yield_pub = self.create_publisher(Bool, '/tb3_1/yield', 10)
-        self.is_yielding = False
-
         self.fire_target_pub = self.create_publisher(Point, f'/{RESCUE}/fire_target', 10)
         self.fire_marker_pub = self.create_publisher(Point, f'/{RESCUE}/fire_marker', 10)
         self.wait_pubs = {
@@ -46,17 +44,25 @@ class MultiRobotCoordinator(Node):
         self.approach_pubs = {
             ns: self.create_publisher(Point, f'/{ns}/fire_approach', 10) for ns in ROBOTS
         }
-        self.finder_at_fire = False
         for ns in ROBOTS:
             self.create_subscription(
                 Bool, f'/{ns}/at_fire', lambda msg, ns=ns: self.at_fire_callback(ns, msg), 10)
-        self.seen_logged = set()
-        self.tf_warned = set()
+            self.create_subscription(
+                ArucoMarkers, '/' + ns + '/aruco_markers',
+                lambda msg, ns=ns: self.markers_callback(ns, msg), 10)
+        self.create_subscription(
+            Bool, f'/{RESCUE}/rescue_arrived', self.rescue_arrived_callback, 10)
+            
+        
+
+        self.is_yielding = False
 
         self.fire_found = False
+        self.fire_found_at = None
         self.finder_id = None
         self.fire_marker_pos = None 
         self.rescue_goal = None 
+        self.finder_at_fire = False
         self.rescue_arrived = False 
         self.release_at = None
         self.fire_done = False
@@ -65,14 +71,10 @@ class MultiRobotCoordinator(Node):
         self.in_flight = set()
         self.pending = {}
         self.retry_after = {}
+        self.seen_logged = set()
+        self.tf_warned = set()
 
-        for ns in ROBOTS:
-            self.create_subscription(
-                ArucoMarkers, '/' + ns + '/aruco_markers',
-                lambda msg, ns=ns: self.markers_callback(ns, msg), 10)
-
-        self.create_subscription(
-            Bool, f'/{RESCUE}/rescue_arrived', self.rescue_arrived_callback, 10)
+        
 
         self.create_timer(0.5, self.timer_callback)
         self.create_timer(0.1, self.proximity_callback)
@@ -82,7 +84,7 @@ class MultiRobotCoordinator(Node):
         self.handle_big_fire()
 
     def handle_yield(self):
-        #hvis avstanden mellom robotene er udner 0.7m viker tb3_1 unna
+        #hvis avstanden mellom robotene er nærmere enn 0.7m viker tb3_1 unna
         try:
             tf0 = self.tf_buffer.lookup_transform('map', 'tb3_0/base_footprint', Time())
             tf1 = self.tf_buffer.lookup_transform('map', 'tb3_1/base_footprint', Time())
@@ -113,6 +115,7 @@ class MultiRobotCoordinator(Node):
             self.fire_target_pub.publish(self.rescue_goal)
 
         now = self.get_clock().now().nanoseconds
+        
         if self.fire_found_at is not None and now - self.fire_found_at > self.fire_max_wait * 1e9:
             self.fire_done = True
             self.wait_pubs[self.finder_id].publish(Bool(data=False))
@@ -213,7 +216,6 @@ class MultiRobotCoordinator(Node):
                     f'Sender {RESCUE} til ({self.rescue_goal.x:.2f}, '
                     f'{self.rescue_goal.y:.2f}).')
 
-            # Alle markører (også ID 4) rapporteres med en gang
             self.get_logger().info(f'Rapporterer ID {marker_id} ved ({x:.2f}, {y:.2f}) til scoring')
             req = SetMarkerPosition.Request()
             req.marker_id = marker_id
