@@ -45,7 +45,7 @@ class PRMGenerator:
         img_path = os.path.join(os.path.dirname(yaml_path), meta['image'])
         img = cv2.imread(img_path, cv2.IMREAD_GRAYSCALE)
         if img is None:
-            raise FileNotFoundError(f'Kunne ikke laste bildet {img_path}')
+            raise FileNotFoundError(f'could not load image {img_path}')
         p = img.astype(np.float32) / 255.0
         occ = p if int(meta.get('negate', 0)) else 1.0 - p
         free = ((occ < float(meta.get('free_thresh', 0.196))).astype(np.uint8)) * 255
@@ -121,8 +121,8 @@ class PRMGenerator:
         for sx, sy in start_points_world:
             seed = self._snap_free(*self._world_to_pixel(sx, sy), self.map_data)
             if seed is None:
-                raise RuntimeError(f'Start ({sx:.2f}, {sy:.2f}) er ikke nær åpent rom - '
-                                   f'er robotens posisjon i kartets krodinatsystem?')
+                raise RuntimeError(f'Start ({sx:.2f}, {sy:.2f}) is not near free space- '
+                                   f'is the robot pose in the map frame')
             if self.region[seed[1], seed[0]]:
                 continue
             ff = self.map_data.copy()
@@ -416,7 +416,7 @@ class PRMGenerator:
         hit = ~inb | self.vis_occ[ys, xs]
         any_hit = hit.any(1)
         first = hit.argmax(1)
-        r = np.nonzero(any_hit)[0]
+        r = np.nonzero(any_hit)[0] 
         ids = self.wall_id[ys[r, first[r]], xs[r, first[r]]]
         ok = ids >= 0
         ids, ra = ids[ok], np.asarray(angles)[r[ok]]
