@@ -377,6 +377,11 @@ class ExplorerNode(Node):
                     f'Robot pose ({self.x:.2f}, {self.y:.2f}) is inside a wall on the map! '
                     f'Odometry and map frames do not match.')
             self.prm.generate_roadmap(robot_starts)
+            rescue = self.peer_poses.get('tb3_2')
+            if rescue is not None:
+                removed = self.prm.add_obstacle(*rescue, radius=0.25)
+                self.get_logger().info(f'Rescue robot at ({rescue[0]:.2f}, {rescue[1]:.2f}) '
+                                       f'added as obstacle: removed {removed} roadmap edges')
             self.waypoints, self.looks = self.prm.get_exploration_plan(robot_starts, robot_index)
         except Exception as e:
             self.get_logger().error(f'Planning failed: {e}')

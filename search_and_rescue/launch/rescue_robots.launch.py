@@ -1,11 +1,3 @@
-"""
-Full search & rescue run: world + map server + 3 robots + scoring + RViz,
-PRM explorers on tb3_0 / tb3_1, coordinator, and the rescue robot on tb3_2.
-
-  ros2 launch search_and_rescue rescue_robots.launch.py world:=1
-
-world:=1..5 picks dat160_w<N>.world and map_dat160_w<N>.yaml.
-"""
 import os
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
@@ -17,18 +9,46 @@ from launch_ros.actions import Node
 package_name = 'search_and_rescue'
 
 # Namespace, spawn position (x, y) and yaw of every robot. All inside the start zone.
-ROBOTS = {
-    'tb3_0': ('0.0', '-1.0', '0.0'),
-    'tb3_1': ('0.0', '1.0', '0.0'),
-    'tb3_2': ('-1.0', '0.0', '0.0'),
+
+SPAWN_PER_WORLD = {
+    '1': {
+        'tb3_0': ('0.0', '-1.0', '0.0'),
+        'tb3_1': ('0.0', '1.0', '0.0'),
+        'tb3_2': ('-1.0', '0.0', '0.0'),
+    },
+    '2': {
+        'tb3_0': ('-1.0', '1.0', '0.0'),
+        'tb3_1': ('-1.0', '-1.0', '0.0'),
+        'tb3_2': ('-2.0', '0.0', '0.0'),
+    },
+    '3': {
+        'tb3_0': ('-1.0', '0.5', '0.0'),
+        'tb3_1': ('-1.0', '-1.5', '0.0'),
+        'tb3_2': ('-2.0', '-0.5', '0.0'),
+    },
+    '4': {
+        'tb3_0': ('-0.5', '0.7', '0.0'),
+        'tb3_1': ('-0.5', '-1.3', '0.0'),
+        'tb3_2': ('-1.5', '-0.3', '0.0'),
+    },
+    '5': {
+        'tb3_0': ('0.0', '-0.5', '0.0'),
+        'tb3_1': ('0.0', '-2.5', '0.0'),
+        'tb3_2': ('-1.0', '-1.5', '0.0'),
+    },
 }
-EXPLORERS = ['tb3_0', 'tb3_1']   # tb3_2 is the rescue robot
+DEFAULT_WORLD = '1' 
+
+ROBOT_NAMES = ['tb3_0', 'tb3_1', 'tb3_2']
+
+EXPLORERS = ['tb3_0', 'tb3_1']
 
 
 def launch_setup(context):
     share = get_package_share_directory(package_name)
     world = LaunchConfiguration('world').perform(context)
     use_sim_time = LaunchConfiguration('use_sim_time')
+    robots = SPAWN_PER_WORLD.get(world, SPAWN_PER_WORLD[DEFAULT_WORLD])
 
     world_file_path = os.path.join(share, 'worlds', f'dat160_w{world}.world')
     map_file_path = os.path.join(share, 'maps', f'map_dat160_w{world}.yaml')
@@ -57,7 +77,7 @@ def launch_setup(context):
     ]
 
     # Spawn every robot (also starts its ArUco detection and map->odom transform)
-    for ns, (x, y, yaw) in ROBOTS.items():
+    for ns, (x, y, yaw) in robots.items():
         actions.append(IncludeLaunchDescription(
             PythonLaunchDescriptionSource(os.path.join(share, 'launch', 'spawn_robot.launch.py')),
             launch_arguments={'namespace': ns, 'x': x, 'y': y, 'yaw': yaw}.items()))
@@ -70,7 +90,7 @@ def launch_setup(context):
             parameters=[{'use_sim_time': True,
                          'namespace': ns,
                          'num_robots': len(EXPLORERS),
-                         'all_robots': list(ROBOTS)}]))
+                         'all_robots': list(ROBOT_NAMES)}]))
 
     actions += [
         Node(package=package_name, executable='multi_robot_coordinator', output='screen',
@@ -82,7 +102,7 @@ def launch_setup(context):
              parameters=[{'use_sim_time': True,
                           'namespace': 'tb3_2',
                           'role': 'rescue',
-                          'all_robots': list(ROBOTS)}]),
+                          'all_robots': list(ROBOT_NAMES)}]),
     ]
     return actions
 
