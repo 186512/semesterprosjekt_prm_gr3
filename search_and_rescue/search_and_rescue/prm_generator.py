@@ -37,7 +37,7 @@ class PRMGenerator:
 
 
     #henter yaml filen for kartene. finner ut hvor mange meter en piskel er. og laster opp bildet med gråtone
-    #hvor hver pixel har en verdi 0(svart) til hvit(255). verdier under free_thresh betyr fritt og verdier åver betyr vegg.
+    #hvor hver pixel har en verdi 0(svart) til hvit(255). verdier under free_thresh betyr fritt og verdier over betyr vegg.
     @classmethod
     def from_yaml(cls, yaml_path, **kw): 
         with open(yaml_path) as f: 
@@ -68,7 +68,7 @@ class PRMGenerator:
         wy = (self.map_data.shape[0] - py - 0.5) * self.resolution + self.origin_y
         return (wx, wy)
 
-    #konverterer en posisjon i meter ti len posisjon i bildet.
+    #konverterer en posisjon i meter til en posisjon i bildet.
     def _world_to_pixel(self, wx, wy):
         px = int((wx - self.origin_x) / self.resolution)
         py = int(self.map_data.shape[0] - (wy - self.origin_y) / self.resolution)
@@ -101,7 +101,7 @@ class PRMGenerator:
         (x1, y1), (x2, y2) = self.nodes[i], self.nodes[j]
         return math.hypot(x2 - x1, y2 - y1)
 
-    #finner næreste åpne punk dersom en robot er for nærme en vegg.
+    #finner næreste ledig punkt dersom en robot er for nærme en vegg.
     def _snap_free(self, px, py, mask, max_r_m=0.6):
         if self._is_free(px, py, mask):
             return px, py
@@ -114,7 +114,7 @@ class PRMGenerator:
         i = int(np.argmin((xs + x0 - px) ** 2 + (ys + y0 - py) ** 2))
         return int(xs[i] + x0), int(ys[i] + y0)
 
-    #genererer roadmappet i oråder robotene kan nå.
+    #genererer roadmappet i områder robotene kan nå.
     def generate_roadmap(self, start_points_world):
         h, w = self.map_data.shape
         self.region = np.zeros_like(self.map_data)
