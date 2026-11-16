@@ -8,7 +8,6 @@ from launch_ros.actions import Node
 
 package_name = 'search_and_rescue'
 
-# Namespace, spawn position (x, y) and yaw of every robot. All inside the start zone.
 
 SPAWN_PER_WORLD = {
     '1': {
@@ -76,13 +75,11 @@ def launch_setup(context):
              parameters=[{'use_sim_time': use_sim_time}]),
     ]
 
-    # Spawn every robot (also starts its ArUco detection and map->odom transform)
     for ns, (x, y, yaw) in robots.items():
         actions.append(IncludeLaunchDescription(
             PythonLaunchDescriptionSource(os.path.join(share, 'launch', 'spawn_robot.launch.py')),
             launch_arguments={'namespace': ns, 'x': x, 'y': y, 'yaw': yaw}.items()))
 
-    # PRM explorers (replace the wall followers)
     for ns in EXPLORERS:
         actions.append(Node(
             package=package_name, executable='explorer', name='explorer', namespace=ns,
@@ -95,8 +92,6 @@ def launch_setup(context):
     actions += [
         Node(package=package_name, executable='multi_robot_coordinator', output='screen',
              parameters=[{'use_sim_time': True}]),
-        # Rescue robot: same planner/controller as the explorers, in 'rescue' mode. It waits at
-        # the start and drives to the big fire when the coordinator calls.
         Node(package=package_name, executable='explorer', name='rescue', namespace='tb3_2',
              output='screen',
              parameters=[{'use_sim_time': True,
